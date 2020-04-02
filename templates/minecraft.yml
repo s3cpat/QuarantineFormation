@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy Minecraft server running Spigot'
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceType:
+    Description: Minecraft Server EC2 instance type
+    Type: String
+    Default: t2.medium
+    AllowedValues:
+    - t2.micro
+    - t2.medium
+    - t3a.medium
+    ConstraintDescription: must be a valid EC2 instance type.
+  ManagementLocation:
+    Description: The IP address range that can be used to SSH manage the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  GameServerLocation:
+    Description: The IP address range that can be used to connect to Minecraft
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+    t2.medium:
+      Arch: HVM64
+    t3a.medium:
+      Arch: HVM64
+  AWSInstanceType2NATArch:
+    t2.micro:
+      Arch: NATHVM64
+    t2.medium:
+      Arch: NATHVM64
+    t3a.medium:
+      Arch: NATHVM64
+  AWSRegionArch2AMI:
+    us-east-1:
+      HVM64: ami-07ebfd5b3428b6f4d
+Resources:
+  MinecraftEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType:
+        Ref: InstanceType
+      SecurityGroups:
+      - Ref: MinecraftInstanceSecurityGroup
+      KeyName:
+        Ref: KeyName
+      Tags:
+      - 
+        Key: "Name"
+        Value: !Join
+          - ''
+          - - 'Minecraft_'
+            - !Ref AWS::StackName
+      ImageId:
+        Fn::FindInMap:
+        - AWSRegionArch2AMI
+        - Ref: AWS::Region
+        - Fn::FindInMap:
+          - AWSInstanceType2Arch
+          - Ref: InstanceType
+          - Arch
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash
+            - |
+              # set envs
+            - |
+              echo "export HOME=/root" >> /etc/profile
+            - |
+              echo "export HOME=/root" >> /etc/environment
+            - |
+              source /etc/profile
+            - |
+              source /etc/environment
+            - |
+              # Update system
+            - |
+              apt update
+            - |
+              DEBIAN_FRONTEND=noninteractive apt-get -y upgrade
+            - |
+              DEBIAN_FRONTEND=noninteractive apt install -y git curl
+            - |
+              DEBIAN_FRONTEND=noninteractive apt install -y openjdk-8-jre-headless git curl screen python-pip
+            - |
+              pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - |
+              chmod -x /etc/update-motd.d/*
+            - |
+              cat <<EOT > /etc/update-motd.d/01-minecraft
+            - |
+              #!/bin/sh
+            - |
+              #
+            - |
+              HOSTNAME=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+            - |
+              printf "Minecraft Server running on $HOSTNAME port 25565 \n\n"
+            - |
+              EOT
+            - |
+              chmod +x /etc/update-motd.d/01-minecraft
+            - |
+              mkdir /minecraft
+            - |
+              curl -o /minecraft/BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+            - |
+              git config --system --unset core.autocrlf
+            - |
+              cd /minecraft
+            - |
+              java -jar -Xmx1024M /minecraft/BuildTools.jar --rev latest
+            - |
+              cat <<EOT > /minecraft/background.sh
+            - |
+              #!/bin/sh
+            - |
+              screen -d -m -S "minecraft" java -jar /minecraft/spigot*.jar -nogui
+            - |
+              EOT
+            - |
+              cat <<EOT > /minecraft/eula.txt
+            - |
+              #By changing the setting below to TRUE you are indicating your agreement to our EULA
+            - |
+              #Mon Feb 25 02:34:11 UTC 2019
+            - |
+              eula=true
+            - |
+              EOT
+            - |
+              chmod +x /minecraft/background.sh
+            - |
+              /minecraft/background.sh
+            - |
+              # do further config on your own, like plugins, operators, server motd, etc
+            - |+
+
+            - |
+              # Signal the status from cfn-init
+            - '/usr/local/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource MinecraftEC2Instance '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+  MinecraftInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable Access for Minecraft Server
+      SecurityGroupIngress:
+      - IpProtocol: '-1'
+        CidrIp:
+          Ref: ManagementLocation
+      - IpProtocol: tcp
+        FromPort: '25565'
+        ToPort: '25565'
+        CidrIp:
+          Ref: GameServerLocation
+Outputs:
+  PublicDNS:
+    Description: Public DNSName of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - MinecraftEC2Instance
+      - PublicDnsName
+  PublicIP:
+    Description: Public IP address of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - MinecraftEC2Instance
+      - PublicIp

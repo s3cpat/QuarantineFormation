@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy Jeopardy server (using https://github.com/theGrue/jeopardy)'
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceType:
+    Description: Jeopardy Server EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - t2.medium
+    - t3a.medium
+    ConstraintDescription: must be a valid EC2 instance type.
+  ManagementLocation:
+    Description: The IP address range that can be used to SSH manage the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  GameServerLocation:
+    Description: The IP address range that can be used to connect to Jeopardy
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+    t2.medium:
+      Arch: HVM64
+    t3a.medium:
+      Arch: HVM64
+  AWSInstanceType2NATArch:
+    t2.micro:
+      Arch: NATHVM64
+    t2.medium:
+      Arch: NATHVM64
+    t3a.medium:
+      Arch: NATHVM64
+  AWSRegionArch2AMI:
+    us-east-1:
+      HVM64: ami-07ebfd5b3428b6f4d
+Resources:
+  JeopardyEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType:
+        Ref: InstanceType
+      SecurityGroups:
+      - Ref: JeopardyInstanceSecurityGroup
+      KeyName:
+        Ref: KeyName
+      Tags:
+      - 
+        Key: "Name"
+        Value: !Join
+          - ''
+          - - 'Jeopardy_'
+            - !Ref AWS::StackName
+      ImageId:
+        Fn::FindInMap:
+        - AWSRegionArch2AMI
+        - Ref: AWS::Region
+        - Fn::FindInMap:
+          - AWSInstanceType2Arch
+          - Ref: InstanceType
+          - Arch
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -x
+            - |
+              # updates
+            - |
+              apt update
+            - |
+              DEBIAN_FRONTEND=noninteractive apt-get -y upgrade
+            - |
+              DEBIAN_FRONTEND=noninteractive apt install -y git curl screen python-pip
+            - |
+              pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - |
+              curl -fsSL https://get.docker.com | sh
+            - |
+              # config and run
+            - |
+              mkdir /opt/jeopardy
+            - |
+              cat << EOF > /opt/jeopardy/Dockerfile
+            - |
+              FROM ubuntu:latest
+            - |
+              WORKDIR /opt/jeopardy
+            - |
+              RUN apt -y update && apt -y upgrade
+            - |
+              RUN apt install -y git curl software-properties-common
+            - |
+              RUN curl -sL https://deb.nodesource.com/setup_12.x | bash -
+            - |
+              RUN apt install -y nodejs
+            - |
+              RUN npm install -g bower
+            - |
+              RUN node --version
+            - |
+              RUN npm --version
+            - |
+              RUN bower --version
+            - |
+              RUN git clone https://github.com/theGrue/jeopardy .
+            - |
+              RUN npm install && bower install --allow-root
+            - |
+              EXPOSE 3000
+            - |
+              ENTRYPOINT node app.js
+            - |
+              EOF
+            - |
+              docker build --tag jeopardy:1.0 /opt/jeopardy
+            - |
+              docker run --name jeopardy -it -d -p 80:3000 jeopardy:1.0
+            - |+
+
+            - |
+              # Signal the status from cfn-init
+            - '/usr/local/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource JeopardyEC2Instance '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT7M
+  JeopardyInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable Access for Jeopardy Server
+      SecurityGroupIngress:
+      - IpProtocol: '-1'
+        CidrIp:
+          Ref: ManagementLocation
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp:
+          Ref: GameServerLocation
+Outputs:
+  AlexView:
+    Description: Where the person playing "Alex" goes
+    Value: !Join
+      - ''
+      - - 'http://'
+        - Fn::GetAtt:
+          - JeopardyEC2Instance
+          - PublicDnsName
+        - '/'
+  BoardView:
+    Description: Where the players go
+    Value: !Join
+      - ''
+      - - 'http://'
+        - Fn::GetAtt:
+          - JeopardyEC2Instance
+          - PublicDnsName
+        - '/#/board'
+  BuzzerTool:
+    Description: Smartphone buzzer system
+    Value: 'https://buzzin.live/'
